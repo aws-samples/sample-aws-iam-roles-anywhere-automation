@@ -1,0 +1,147 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS IAM Roles Anywhere with Private Certificate Authority - Complete Infrastructure'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'MyRolesAnywhere'
+    Description: 'Name prefix for all resources'
+  
+  CertificateValidityYears:
+    Type: Number
+    Default: 3
+    MinValue: 1
+    MaxValue: 10
+    Description: 'Root CA certificate validity in years'
+  
+  SessionDurationSeconds:
+    Type: Number
+    Default: 3600
+    MinValue: 900
+    MaxValue: 43200
+    Description: 'Maximum session duration for assumed roles (15 min to 12 hours)'
+  
+  IAMPolicyArns:
+    Type: CommaDelimitedList
+    Default: 'arn:aws:iam::aws:policy/ReadOnlyAccess'
+    Description: 'Comma-separated list of IAM policy ARNs to attach to the role (e.g., arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess,arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess)'
+
+Resources:
+  # Private Certificate Authority
+  PrivateCertificateAuthority:
+    Type: AWS::ACMPCA::CertificateAuthority
+    Properties:
+      Type: ROOT
+      KeyAlgorithm: RSA_2048
+      SigningAlgorithm: SHA256WITHRSA
+      Subject:
+        Country: US
+        Organization: !Ref ProjectName
+        OrganizationalUnit: Security
+        State: Washington
+        CommonName: !Sub '${ProjectName}-RootCA'
+        Locality: Seattle
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-PrivateCA'
+
+  # Root CA Certificate
+  CACertificate:
+    Type: AWS::ACMPCA::Certificate
+    Properties:
+      CertificateAuthorityArn: !Ref PrivateCertificateAuthority
+      CertificateSigningRequest: !GetAtt PrivateCertificateAuthority.CertificateSigningRequest
+      SigningAlgorithm: SHA256WITHRSA
+      TemplateArn: arn:aws:acm-pca:::template/RootCACertificate/V1
+      Validity:
+        Type: YEARS
+        Value: !Ref CertificateValidityYears
+
+  # Install Certificate on CA
+  CACertificateActivation:
+    Type: AWS::ACMPCA::CertificateAuthorityActivation
+    Properties:
+      CertificateAuthorityArn: !Ref PrivateCertificateAuthority
+      Certificate: !GetAtt CACertificate.Certificate
+      Status: ACTIVE
+
+  # IAM Role for external systems
+  ExternalSystemRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: rolesanywhere.amazonaws.com
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+              - sts:SetSourceIdentity
+      ManagedPolicyArns: !Ref IAMPolicyArns
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-ExternalSystemRole'
+
+  # Trust Anchor
+  TrustAnchor:
+    Type: AWS::RolesAnywhere::TrustAnchor
+    DependsOn: CACertificateActivation
+    Properties:
+      Name: !Sub '${ProjectName}-TrustAnchor'
+      Enabled: true
+      Source:
+        SourceType: AWS_ACM_PCA
+        SourceData:
+          AcmPcaArn: !Ref PrivateCertificateAuthority
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-TrustAnchor'
+
+  # Profile
+  Profile:
+    Type: AWS::RolesAnywhere::Profile
+    Properties:
+      Name: !Sub '${ProjectName}-Profile'
+      Enabled: true
+      DurationSeconds: !Ref SessionDurationSeconds
+      RoleArns:
+        - !GetAtt ExternalSystemRole.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-Profile'
+
+Outputs:
+  PrivateCAArn:
+    Description: 'Private Certificate Authority ARN'
+    Value: !Ref PrivateCertificateAuthority
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateCA-ARN'
+
+  TrustAnchorArn:
+    Description: 'Trust Anchor ARN'
+    Value: !GetAtt TrustAnchor.TrustAnchorArn
+    Export:
+      Name: !Sub '${AWS::StackName}-TrustAnchor-ARN'
+
+  ProfileArn:
+    Description: 'Profile ARN'
+    Value: !GetAtt Profile.ProfileArn
+    Export:
+      Name: !Sub '${AWS::StackName}-Profile-ARN'
+
+  RoleArn:
+    Description: 'IAM Role ARN'
+    Value: !GetAtt ExternalSystemRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-Role-ARN'
+
+  SetupCommand:
+    Description: 'Command to run client setup script'
+    Value: !Sub |
+      ./setup-client.sh \
+        --ca-arn ${PrivateCertificateAuthority} \
+        --trust-anchor-arn ${TrustAnchor.TrustAnchorArn} \
+        --profile-arn ${Profile.ProfileArn} \
+        --role-arn ${ExternalSystemRole.Arn}
