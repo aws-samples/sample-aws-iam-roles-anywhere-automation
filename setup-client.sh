@@ -40,7 +40,8 @@ usage() {
     echo "  --role-arn            IAM Role ARN"
     echo ""
     echo "Optional parameters:"
-    echo "  --client-name         Client certificate name (default: client-YYYYMMDD-HHMMSS)"
+    echo "  --client-name         Client certificate Subject CN (default: client-YYYYMMDD-HHMMSS)."
+    echo "                        Must match the stack's AllowedClientCommonNamePattern parameter."
     echo "  --cert-validity       Certificate validity in days (default: 365)"
     echo "  --helper-version      AWS Signing Helper version (default: 1.4.0)"
     echo "  --help               Show this help message"
@@ -68,6 +69,13 @@ while [[ $# -gt 0 ]]; do
             ;;
         --client-name)
             CLIENT_NAME="$2"
+            # The client name becomes the certificate Subject CN, which the role trust
+            # policy uses for authorization. Restrict characters so the value cannot
+            # inject additional subject fields (e.g. "/CN=...") into the CSR.
+            if ! [[ "$CLIENT_NAME" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
+                print_error "Client name must be 1-64 characters: letters, numbers, dot, underscore, or hyphen"
+                exit 1
+            fi
             shift 2
             ;;
         --cert-validity)

@@ -1,23 +1,25 @@
 # AWS IAM Roles Anywhere with Private Certificate Authority
 
-This solution automates the deployment of AWS IAM Roles Anywhere with Private Certificate Authority, enabling secure certificate-based authentication for external workloads accessing AWS resources without long-term access keys.
+This solution automates the deployment of AWS Identity and Access Management Roles Anywhere (IAM Roles Anywhere) with AWS Private Certificate Authority (AWS Private CA). External workloads authenticate with X.509 certificates and receive temporary AWS credentials instead of long-term access keys.
+
+> **Important:** Sample code for non-production use. Do not deploy to production environments without additional security testing and review. See [SECURITY.md](SECURITY.md) for known limitations and production recommendations.
 
 ## Architecture
 
-![Architecture Diagram](architecture_diagram.png)
+![Architecture Diagram](arch_diagram.png)
 
 ## What This Solution Provides
 
-- **Automated AWS Infrastructure**: CloudFormation template creates Private CA, Trust Anchor, IAM Role, and Profile
+- **Automated AWS Infrastructure**: AWS CloudFormation template creates an AWS Private CA root CA, an IAM Roles Anywhere trust anchor and profile, and an IAM role
 - **Client Certificate Generation**: Automated script generates certificates for external systems
 - **Configurable Permissions**: Flexible IAM policy assignment based on your requirements
-- **Production Ready**: Security-scanned and follows AWS best practices
+- **Security-Focused Defaults**: Role trust policy scoped to this stack's trust anchor, account, CA, and allowed client certificate names. This is sample code; review and adapt it to your organization's security requirements before production use
 
 ## Prerequisites
 
 ### For AWS Infrastructure Deployment
 - AWS CLI installed and configured with administrative permissions
-- Administrative permissions for IAM, IAM Roles Anywhere, and AWS Private Certificate Authority services
+- Administrative permissions for IAM, IAM Roles Anywhere, and AWS Private CA
 
 ### For Client System Setup
 - AWS CLI installed with permissions to:
@@ -100,6 +102,18 @@ cd iam-roles-anywhere-client-*
 | `CertificateValidityYears` | Root CA certificate validity (1-10 years) | `3` |
 | `SessionDurationSeconds` | Max session duration (900-43200 seconds) | `3600` |
 | `IAMPolicyArns` | Comma-separated IAM policy ARNs | `ReadOnlyAccess` |
+| `AllowedClientCommonNamePattern` | Client certificate Subject CN (exact value or `*` pattern) allowed to assume the role. Must match the `--client-name` passed to `setup-client.sh`. | `client-*` |
+
+### Role Trust Policy
+
+The IAM role created by the template can only be assumed through IAM Roles Anywhere when all of the following are true:
+
+- `aws:SourceArn` is the trust anchor created by this stack
+- `aws:SourceAccount` is the account the stack is deployed in
+- `aws:PrincipalTag/x509Issuer/CN` is this stack's private CA (`<ProjectName>-RootCA`)
+- `aws:PrincipalTag/x509Subject/CN` matches `AllowedClientCommonNamePattern`
+
+This prevents IAM Roles Anywhere from acting as a [confused deputy](https://docs.aws.amazon.com/IAM/latest/UserGuide/confused-deputy.html) for other trust anchors or profiles that reference the role. For production use, set `AllowedClientCommonNamePattern` to the exact CN of each workload (for example, `payments-batch-01`) instead of a broad wildcard. See [Trust model in IAM Roles Anywhere](https://docs.aws.amazon.com/rolesanywhere/latest/userguide/trust-model.html).
 
 ## Using the Credentials
 
@@ -133,7 +147,7 @@ aws s3 ls
 ### Common Issues
 
 **"ValidationException: Error creating TrustAnchor"**
-- Ensure Private CA is in ACTIVE status
+- Ensure the AWS Private CA certificate authority is in ACTIVE status
 - Verify you have proper permissions for IAM Roles Anywhere
 
 **"Permission denied" when running scripts**
@@ -146,6 +160,35 @@ aws s3 ls
 **"Access denied" errors**
 - Verify IAM role permissions match your use case
 - Check trust policy configuration
+- Confirm the client certificate CN (`--client-name`) matches the stack's `AllowedClientCommonNamePattern`
+- Confirm you're using the trust anchor and profile from the same stack as the role
+
+## Cleanup
+
+AWS Private CA charges a monthly fee for each certificate authority while it exists, prorated for partial months. Delete the resources when you no longer need them. See [AWS Private CA pricing](https://aws.amazon.com/private-ca/pricing/).
+
+1. Delete the local client directories. They contain unencrypted private keys.
+
+   ```bash
+   rm -rf ./iam-roles-anywhere-*/
+   ```
+
+2. Delete the CloudFormation stack. This removes the IAM role, the IAM Roles Anywhere trust anchor and profile, and the AWS Private CA certificate authority.
+
+   ```bash
+   aws cloudformation delete-stack --stack-name my-roles-anywhere
+   aws cloudformation wait stack-delete-complete --stack-name my-roles-anywhere
+   ```
+
+3. Confirm the certificate authority status is `DELETED`. Run this with the `CA_ARN` value from Step 2 of the Quick Start.
+
+   ```bash
+   aws acm-pca describe-certificate-authority \
+       --certificate-authority-arn "$CA_ARN" \
+       --query 'CertificateAuthority.Status' --output text
+   ```
+
+   A deleted certificate authority stays restorable for a restoration period and is permanently deleted after that. You are not charged for it while it is in the `DELETED` state. If you restore it, you are charged for the time it was deleted.
 
 ## Files Description
 
@@ -153,13 +196,17 @@ aws s3 ls
 - `setup-client.sh` - Automated client certificate generation and setup
 - `arch_diagram.png` - Solution architecture diagram
 
+## Security
+
+See [SECURITY.md](SECURITY.md) for known limitations, production recommendations, and how to report a security issue. See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
+
 ## Contributing
 
-This is an open-source AWS pattern. Feel free to submit issues and enhancement requests!
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## License
 
-This project is licensed under the MIT License - see the AWS samples license for details.
+This library is licensed under the MIT-0 License. See the [LICENSE](LICENSE) file.
 
 ---
 
