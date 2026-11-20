@@ -26,6 +26,13 @@ Parameters:
     Default: 'arn:aws:iam::aws:policy/ReadOnlyAccess'
     Description: 'Comma-separated list of IAM policy ARNs to attach to the role (e.g., arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess,arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess)'
 
+  AllowedClientCommonNamePattern:
+    Type: String
+    Default: 'client-*'
+    AllowedPattern: '^[A-Za-z0-9._*-]{1,64}$'
+    ConstraintDescription: 'Must be 1-64 characters: letters, numbers, dot, underscore, hyphen, or * wildcard'
+    Description: 'Client certificate Subject CN (exact value or StringLike pattern with *) allowed to assume the role. Must match the --client-name used with setup-client.sh. Use the most specific value possible.'
+
 Resources:
   # Private Certificate Authority
   PrivateCertificateAuthority:
@@ -66,6 +73,11 @@ Resources:
       Status: ACTIVE
 
   # IAM Role for external systems
+  # The trust policy is scoped so that only sessions created through this stack's
+  # trust anchor, in this account, with a client certificate issued by this stack's
+  # private CA and carrying an allowed Subject CN can assume the role. This prevents
+  # IAM Roles Anywhere from acting as a confused deputy for other trust anchors or
+  # profiles that reference this role.
   ExternalSystemRole:
     Type: AWS::IAM::Role
     Properties:
@@ -79,6 +91,14 @@ Resources:
               - sts:AssumeRole
               - sts:TagSession
               - sts:SetSourceIdentity
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt TrustAnchor.TrustAnchorArn
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+                aws:PrincipalTag/x509Issuer/CN: !Sub '${ProjectName}-RootCA'
+              StringLike:
+                aws:PrincipalTag/x509Subject/CN: !Ref AllowedClientCommonNamePattern
       ManagedPolicyArns: !Ref IAMPolicyArns
       Tags:
         - Key: Name
